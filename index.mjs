@@ -50,6 +50,7 @@ if (process.env.BAILEYS_CREDS) {
 let latestQRDataUrl = null;
 let isReady = false;
 let sock = null;
+let reconnectDelay = 5000; // starts at 5s, backs off to 2 min max
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -79,6 +80,7 @@ async function startSocket() {
     if (connection === "open") {
       isReady = true;
       latestQRDataUrl = null;
+      reconnectDelay = 5000; // reset backoff on successful connect
       console.log("\n✅ WhatsApp connected! Gateway ready.\n");
     }
 
@@ -86,8 +88,11 @@ async function startSocket() {
       isReady = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
-      console.warn("⚠️  Disconnected (code", code, loggedOut ? "— logged out, need new QR" : "— reconnecting in 5s");
-      if (!loggedOut) setTimeout(startSocket, 5000);
+      console.warn(`⚠️  Disconnected (code ${code}) — ${loggedOut ? "logged out, need new QR" : `reconnecting in ${reconnectDelay / 1000}s`}`);
+      if (!loggedOut) {
+        setTimeout(startSocket, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 120_000); // cap at 2 min
+      }
     }
   });
 }
