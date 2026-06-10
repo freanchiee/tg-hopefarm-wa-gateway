@@ -164,6 +164,8 @@ const server = http.createServer(async (req, res) => {
       const files = {};
       const entries = fs.readdirSync(AUTH_DIR);
       for (const f of entries) {
+        // Skip large app-state-sync-version files (not needed for reconnect, ~72KB)
+        if (f.startsWith("app-state-sync-version-")) continue;
         files[f] = fs.readFileSync(path.join(AUTH_DIR, f), "utf8");
       }
       const encoded = Buffer.from(JSON.stringify(files)).toString("base64");
