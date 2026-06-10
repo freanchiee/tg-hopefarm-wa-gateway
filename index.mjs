@@ -11,7 +11,8 @@
  * The server will auto-import it on next start.
  */
 
-import makeWASocket, {
+import {
+  makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
   makeCacheableSignalKeyStore,
