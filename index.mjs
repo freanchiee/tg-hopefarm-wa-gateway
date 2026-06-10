@@ -2,8 +2,13 @@
  * Toni & Guy WhatsApp Gateway — Baileys (ESM)
  * No browser, no Puppeteer. Uses WhatsApp multi-device protocol.
  *
- * Run:  node wa-gateway/index.mjs
+ * Run:  node index.mjs
  * Open: http://localhost:8002  → scan QR once, session saved forever
+ *
+ * On Railway: if WA blocks cloud IPs, scan QR locally first, then:
+ *   node index.mjs --export-creds
+ * Copy the printed BAILEYS_CREDS value, set it as a Railway env var.
+ * The server will auto-import it on next start.
  */
 
 import makeWASocket, {
@@ -13,7 +18,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import http from "http";
-import { execSync } from "child_process";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import pino from "pino";
@@ -21,14 +26,30 @@ import pino from "pino";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || process.env.WA_PORT || 8002;
 const API_KEY = process.env.OPENWA_API_KEY || "";
-// On Railway: mount a volume at /data and set AUTH_DIR=/data/.baileys_auth
-// This ensures the session persists across deploys
 const AUTH_DIR = process.env.AUTH_DIR || path.join(__dirname, ".baileys_auth");
+
+// ── If BAILEYS_CREDS env var is set, pre-seed the auth dir from it ──────────
+if (process.env.BAILEYS_CREDS) {
+  try {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    const files = JSON.parse(
+      Buffer.from(process.env.BAILEYS_CREDS, "base64").toString("utf8")
+    );
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(
+        path.join(AUTH_DIR, name),
+        typeof content === "string" ? content : JSON.stringify(content)
+      );
+    }
+    console.log("✅ Loaded credentials from BAILEYS_CREDS env var");
+  } catch (e) {
+    console.error("⚠️  Failed to load BAILEYS_CREDS:", e.message);
+  }
+}
 
 let latestQRDataUrl = null;
 let isReady = false;
 let sock = null;
-let browserOpened = false;
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -39,7 +60,6 @@ async function startSocket() {
       keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
     },
     logger: pino({ level: "silent" }),
-    printQRInTerminal: true,
     browser: ["Toni & Guy Hopefarm", "Chrome", "1.0"],
     connectTimeoutMs: 60_000,
     defaultQueryTimeoutMs: 60_000,
@@ -54,10 +74,6 @@ async function startSocket() {
     if (qr) {
       latestQRDataUrl = await QRCode.toDataURL(qr, { width: 400, margin: 2 });
       console.log("\n📱 QR ready — open http://localhost:" + PORT + " to scan\n");
-      if (!browserOpened) {
-        browserOpened = true;
-        setTimeout(() => { try { execSync("open http://localhost:" + PORT); } catch {} }, 400);
-      }
     }
 
     if (connection === "open") {
@@ -92,7 +108,7 @@ const server = http.createServer(async (req, res) => {
     }
     const qrHtml = latestQRDataUrl
       ? `<img id="qr" src="${latestQRDataUrl}" style="border-radius:12px;width:300px;height:300px;display:block" />`
-      : `<p style="color:#aaa">⏳ Starting up... QR will appear in a few seconds.</p>`;
+      : `<p style="color:#aaa">⏳ Starting up... QR will appear in a few seconds.<br><small style="color:#555">If QR never appears, WhatsApp may be blocking this server's IP.<br>Scan QR locally and set the BAILEYS_CREDS env var.</small></p>`;
     return res.end(`<!DOCTYPE html><html><head><title>Link WhatsApp</title></head>
       <body style="background:#0a0a0a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:20px;margin:0;padding:20px;box-sizing:border-box">
         <div style="text-align:center">
@@ -134,6 +150,23 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url === "/health") {
     return res.end(JSON.stringify({ ready: isReady }));
+  }
+
+  // Export credentials as base64 — run locally after scanning QR, then set BAILEYS_CREDS in Railway
+  if (req.method === "GET" && req.url === "/export-creds") {
+    try {
+      const files = {};
+      const entries = fs.readdirSync(AUTH_DIR);
+      for (const f of entries) {
+        files[f] = fs.readFileSync(path.join(AUTH_DIR, f), "utf8");
+      }
+      const encoded = Buffer.from(JSON.stringify(files)).toString("base64");
+      res.setHeader("Content-Type", "text/plain");
+      return res.end(encoded);
+    } catch (e) {
+      res.writeHead(500);
+      return res.end(JSON.stringify({ error: e.message }));
+    }
   }
 
   if (req.method === "POST" && req.url === "/sendText") {
